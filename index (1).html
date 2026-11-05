@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>이산화탄소 농도와 환기 시뮬레이션</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --wall:#d9d2c0; --wood:#a87444; --wood-dark:#6e4626;
+  --board:#2c4a3d; --board-dark:#1f372d; --chalk:#f4f1e8;
+  --yellow:#ffe14d; --orange:#ff9a3c; --red:#ff5252; --sky:#9fdcff;
+}
+*{box-sizing:border-box;margin:0}
+body{
+  min-height:100dvh; display:flex; align-items:center; justify-content:center;
+  padding:clamp(8px,2.5vw,24px);
+  background:linear-gradient(#e3dccb,var(--wall));
+  font-family:'Gaegu','Malgun Gothic','Apple SD Gothic Neo',sans-serif;
+  color:var(--chalk);
+}
+.frame{
+  width:min(100%,1000px); height:min(calc(100dvh - 24px),640px); min-height:380px;
+  display:flex; flex-direction:column;
+  padding:clamp(8px,2vw,18px) clamp(8px,2vw,18px) 0;
+  background:linear-gradient(135deg,var(--wood),var(--wood-dark));
+  border-radius:10px; box-shadow:0 14px 30px rgba(0,0,0,.3);
+}
+.board{
+  position:relative; flex:1; overflow:hidden; border-radius:4px;
+  background:
+    radial-gradient(ellipse at 25% 15%,rgba(255,255,255,.10),transparent 60%),
+    radial-gradient(ellipse at 80% 90%,rgba(255,255,255,.05),transparent 55%),
+    linear-gradient(var(--board),var(--board-dark));
+  box-shadow:inset 0 0 40px rgba(0,0,0,.55);
+}
+.tray{
+  position:relative; height:clamp(14px,3vw,22px); margin:0 -6px;
+  background:linear-gradient(#c28a55,var(--wood-dark)); border-radius:0 0 6px 6px;
+}
+.tray::before,.tray::after{
+  content:""; position:absolute; top:-5px; height:6px; border-radius:3px;
+  background:var(--chalk);
+}
+.tray::before{left:12%; width:34px}
+.tray::after{left:12%; margin-left:44px; width:22px; background:#ffd9e0}
+
+/* 바람 효과 */
+.wind{position:absolute; inset:0; overflow:hidden; pointer-events:none; opacity:0; transition:opacity .6s}
+.wind.on{opacity:1}
+.streak{
+  position:absolute; left:-300px; height:auto; opacity:.75;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 25%,#000 70%,transparent);
+          mask-image:linear-gradient(90deg,transparent,#000 25%,#000 70%,transparent);
+  animation:blow var(--d) linear var(--delay) infinite;
+}
+.wind:not(.on) .streak{animation-play-state:paused}
+@keyframes blow{to{left:105%}}
+
+.content{
+  position:relative; z-index:1; height:100%;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:clamp(6px,2vh,16px); padding:12px clamp(12px,4vw,40px); text-align:center;
+}
+.label{font-size:clamp(1.2rem,4.5vmin,2rem); opacity:.85}
+.value{
+  font-size:clamp(4.5rem,min(26vw,24vh),10rem); font-weight:700; line-height:1;
+  font-variant-numeric:tabular-nums; color:var(--chalk);
+  text-shadow:0 0 12px rgba(255,255,255,.18); transition:color .3s;
+}
+.value small{font-size:.3em; font-weight:400; margin-left:.2em}
+.msg{
+  max-width:30em; min-height:calc(1.4em * 5);
+  font-size:clamp(1.15rem,2.4vw + .6rem,1.9rem); line-height:1.4;
+  word-break:keep-all; text-wrap:balance;
+}
+@media (min-width:700px){ .msg{min-height:calc(1.4em * 3)} }
+
+button{
+  font:inherit; font-weight:700; font-size:clamp(1.5rem,4.5vmin,2.4rem); color:var(--chalk);
+  min-width:7em; min-height:48px; padding:.2em 1.4em; cursor:pointer;
+  background:rgba(255,255,255,.07); border:3px solid var(--chalk);
+  border-radius:14px 20px 12px 18px / 18px 12px 20px 14px;
+  transition:background .2s,border-color .2s,color .2s,transform .1s;
+}
+button:hover{background:rgba(255,255,255,.16)}
+button:active{transform:scale(.96)}
+button:focus-visible{outline:3px dashed var(--yellow); outline-offset:4px}
+button.on{color:var(--sky); border-color:var(--sky); background:rgba(159,220,255,.12)}
+</style>
+</head>
+<body>
+<main class="frame">
+  <div class="board">
+    <div class="wind" id="wind" aria-hidden="true"></div>
+    <div class="content">
+      <div class="label">이산화탄소 농도</div>
+      <div class="value" id="value">420<small>ppm</small></div>
+      <p class="msg" id="msg" aria-live="polite"></p>
+      <button id="btn" type="button" aria-pressed="false">환기</button>
+    </div>
+  </div>
+  <div class="tray"></div>
+</main>
+
+<script>
+const MIN = 420, MAX = 5000;     // 최솟값, 최댓값 (ppm)
+const UP = 100, DOWN = 150;      // 기본 상태 증가량, 환기 상태 감소량 (ppm/초)
+
+let co2 = MIN, ventilating = false, last = performance.now();
+let shown = null;
+
+const valueEl = document.getElementById('value');
+const msgEl = document.getElementById('msg');
+const btn = document.getElementById('btn');
+const wind = document.getElementById('wind');
+
+// 농도 구간별 색상과 멘트
+function getLevel(v){
+  if (v < 700)   return {color:'var(--chalk)',  msg:'공기 중 이산화 탄소 농도와 비슷하다.'};
+  if (v <= 1000) return {color:'var(--yellow)', msg:'불쾌감이 느껴진다.'};
+  if (v <= 2000) return {color:'var(--orange)', msg:'피로와 졸림 현상이 나타나는 등 컨디션 변화가 발생할 수 있다. 다중이용시설 실내공기 중 이산화탄소 유지기준(1,000 ppm)을 초과함.'};
+  if (v <= 3000) return {color:'var(--red)',    msg:'두통 및 어깨 결림이 발생할 수 있다.'};
+  return {color:'var(--red)', msg:'현기증 등이 발생할 수 있으며, 집중력과 인지 능력이 크게 저하된다.'};
+}
+
+function render(){
+  const v = Math.round(co2);
+  if (v === shown) return;
+  shown = v;
+  const lv = getLevel(v);
+  valueEl.firstChild.nodeValue = v;
+  valueEl.style.color = lv.color;
+  if (msgEl.textContent !== lv.msg) msgEl.textContent = lv.msg;
+}
+
+function tick(now){
+  const dt = Math.min((now - last) / 1000, 0.25); // 탭 전환 후 급변 방지
+  last = now;
+  co2 += (ventilating ? -DOWN : UP) * dt;
+  co2 = Math.min(MAX, Math.max(MIN, co2));
+  render();
+  requestAnimationFrame(tick);
+}
+
+btn.addEventListener('click', () => {
+  ventilating = !ventilating;
+  btn.textContent = ventilating ? '환기 중지' : '환기';
+  btn.classList.toggle('on', ventilating);
+  btn.setAttribute('aria-pressed', ventilating);
+  wind.classList.toggle('on', ventilating);
+});
+
+// 바람 줄기 생성
+for (let i = 0; i < 12; i++){
+  const w = 140 + Math.random() * 160;
+  const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  el.setAttribute('class', 'streak');
+  el.setAttribute('viewBox', '0 0 240 40');
+  el.innerHTML = '<path d="M0 26 C60 26 100 12 150 16 S 214 24 206 10 S 182 4 184 14" fill="none" stroke="#dff3ff" stroke-width="3" stroke-linecap="round"/>';
+  const d = 2.4 + Math.random() * 2;
+  el.style.cssText = `width:${w}px;top:${6 + Math.random() * 86}%;--d:${d}s;--delay:-${(Math.random() * d).toFixed(2)}s;transform:rotate(${(Math.random() * 6 - 3).toFixed(1)}deg)`;
+  wind.appendChild(el);
+}
+
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
